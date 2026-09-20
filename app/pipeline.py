@@ -35,14 +35,38 @@ CHANNEL_FOR = {
 }
 
 
-def _separate_child(input_path, out_dir, n_stems, q):
-    """Child-process target: runs Demucs, reports back on a queue."""
+def _separate_child(input_path, out_dir, n_stems, q, log_path):
+    """Child-process target: runs Demucs, reports back on a queue.
+
+    The child's stdout/stderr go to separation.log (the packaged app has no
+    console), and *any* BaseException — including SystemExit from legacy
+    fail() paths — is reported instead of killing the child silently.
+    """
+    log = open(log_path, "w", encoding="utf-8", errors="replace")
+    sys.stdout = log
+    sys.stderr = log
     try:
         from separate import separate_to_wavs
         written = separate_to_wavs(input_path, out_dir, n_stems)
-        q.put(("done", written))
-    except Exception as e:  # noqa: BLE001 — must cross the process boundary
+    except BaseException as e:  # noqa: BLE001 — must cross the process boundary
         q.put(("error", f"separation failed: {e}"))
+    else:
+        q.put(("done", written))
+    finally:
+        log.close()
+
+
+def _read_log_tail(log_path, n=15):
+    """Last n lines of the child log, for error reports. Never raises."""
+    try:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+        tail = [ln for ln in lines if ln.strip()][-n:]
+        if tail:
+            return "\n\nSeparation log (last lines):\n" + "\n".join(tail)
+    except OSError:
+        pass
+    return ""
 
 
 def separate_cancellable(input_path, out_dir, n_stems, cancel_event,
@@ -58,8 +82,10 @@ def separate_cancellable(input_path, out_dir, n_stems, cancel_event,
     _ctx_name = "spawn" if os.name == "nt" else "fork"
     ctx = mp.get_context(_ctx_name)
     q = ctx.Queue()
+    os.makedirs(out_dir, exist_ok=True)
+    log_path = os.path.join(out_dir, "separation.log")
     proc = ctx.Process(target=_separate_child,
-                       args=(input_path, out_dir, n_stems, q))
+                       args=(input_path, out_dir, n_stems, q, log_path))
     proc.start()
     try:
         while True:
@@ -70,11 +96,12 @@ def separate_cancellable(input_path, out_dir, n_stems, cancel_event,
             except queue_mod.Empty:
                 if not proc.is_alive():
                     raise RuntimeError(
-                        "separation process exited without reporting a result")
+                        "separation process exited without reporting a result"
+                        + _read_log_tail(log_path))
                 continue
             if kind == "done":
                 return payload
-            raise RuntimeError(payload)
+            raise RuntimeError(payload + _read_log_tail(log_path))
     finally:
         if proc.is_alive():
             proc.terminate()

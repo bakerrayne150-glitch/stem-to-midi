@@ -29,9 +29,18 @@ STEM_ORDER_4 = ["vocals", "drums", "bass", "other"]
 MODEL_FOR = {6: "htdemucs_6s", 4: "htdemucs"}
 
 
-def fail(msg, code=2):
-    print(f"separate.py: error: {msg}", file=sys.stderr)
-    sys.exit(code)
+def fail(msg):
+    """Fatal separation failure.
+
+    Raises SeparationError (instead of sys.exit) so programmatic callers —
+    e.g. the GUI's child process — receive the real message and can report
+    it. The CLI converts it back to exit code 2.
+    """
+    raise SeparationError(msg)
+
+
+class SeparationError(Exception):
+    """Fatal, user-readable separation failure."""
 
 
 def separate_to_wavs(input_path, out_dir, n_stems=6):
@@ -121,7 +130,11 @@ def main() -> None:
     ap.add_argument("--stems", type=int, choices=(4, 6), default=6,
                     help="4 = fast (vocals/drums/bass/other), 6 = detailed (default)")
     args = ap.parse_args()
-    separate_to_wavs(args.input, args.output, args.stems)
+    try:
+        separate_to_wavs(args.input, args.output, args.stems)
+    except SeparationError as e:
+        print(f"separate.py: error: {e}", file=sys.stderr)
+        sys.exit(2)
 
 
 if __name__ == "__main__":
