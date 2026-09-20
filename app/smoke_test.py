@@ -10,7 +10,6 @@ Run: cd ~/workspace/stem-to-midi && QT_QPA_PLATFORM=offscreen \
 """
 import os
 import sys
-import tempfile
 import time
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -191,7 +190,7 @@ def main():
     win.player.stop()
 
     # ---- 4. session save / reopen ----------------------------------------------
-    sess_path = os.path.join(tempfile.gettempdir(), "smoke_session.stem2midi.json")
+    sess_path = "/tmp/smoke_session.stem2midi.json"
     session_mod.save_session(win.project, sess_path)
     check("session saved", os.path.isfile(sess_path))
     proj2, missing = session_mod.load_session(sess_path)
@@ -206,7 +205,7 @@ def main():
     check("edit history kept", len(win.project.edit_history) > 0)
 
     # ---- 5. export + validate -----------------------------------------------------
-    out_dir = os.path.join(tempfile.gettempdir(), "smoke_export")
+    out_dir = "/tmp/smoke_export"
     written = pipeline.export_all(win.project, out_dir, True, True, False)
     check("export wrote files", len(written) == 7, f"{len(written)} files")
     multi = [p for p in written if "multitrack" in p][0]
@@ -231,7 +230,7 @@ def main():
 
     # ---- 6. relink ---------------------------------------------------------------
     import shutil
-    moved = os.path.join(tempfile.gettempdir(), "smoke_moved_stem.wav")
+    moved = "/tmp/smoke_moved_stem.wav"
     shutil.copy(win.project.stems[0].wav_path, moved)
     session_mod.relink(win.project, win.project.stems[0].wav_path, moved)
     check("relink updates path", win.project.stems[0].wav_path == moved)

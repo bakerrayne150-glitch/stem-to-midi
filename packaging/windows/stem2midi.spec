@@ -4,6 +4,7 @@
 Run via build.bat — do not run this file by hand unless the venv-win
 environment from build.bat is active.
 """
+import importlib.util
 import os
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
@@ -12,6 +13,18 @@ import basic_pitch
 
 PROJECT_ROOT = os.path.abspath(os.path.join(SPECPATH, "..", ".."))
 BP_DIR = os.path.dirname(basic_pitch.__file__)
+
+# Demucs resolves its pretrained-model index at runtime from
+# <package>/remote/files.txt (plus the bag-definition *.yaml files in the
+# same dir). PyInstaller's module collection grabs demucs' .py files but NOT
+# these data files, so without this entry get_model() dies on first run with
+# FileNotFoundError: '...\\demucs\\remote\\files.txt'. find_spec locates the
+# package directory without importing it (importing demucs pulls in torch,
+# which is too heavy for spec time).
+_demucs_spec = importlib.util.find_spec("demucs")
+if _demucs_spec is None or not _demucs_spec.submodule_search_locations:
+    raise RuntimeError("demucs package not found — install requirements-windows.txt first")
+_demucs_dir = _demucs_spec.submodule_search_locations[0]
 
 # torch ships DLLs + data that PyInstaller's stock hooks miss.
 torch_datas, torch_binaries, torch_hidden = collect_all("torch")
@@ -28,6 +41,12 @@ a = Analysis(
         (
             os.path.join(BP_DIR, "saved_models"),
             os.path.join("basic_pitch", "saved_models"),
+        ),
+        # Demucs pretrained-model index (remote/files.txt) + bag-definition
+        # yamls. Without these, first-run model download cannot even start.
+        (
+            os.path.join(_demucs_dir, "remote"),
+            os.path.join("demucs", "remote"),
         ),
     ]
     + torch_datas,

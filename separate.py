@@ -73,6 +73,11 @@ def separate_to_wavs(input_path, out_dir, n_stems=6):
     try:
         model = get_model(model_name)
     except Exception as e:
+        if isinstance(e, FileNotFoundError) and "remote" in str(e):
+            # Demucs' bundled model index didn't ship with the install —
+            # a packaging bug, not a network problem.
+            fail(f"Demucs model index is missing from this install: {e}\n"
+                 f"please reinstall Stem2MIDI or report this bug.")
         fail(f"could not load/download Demucs model {model_name!r}: {e}\n"
              f"check your internet connection and retry.")
     model.cpu()
