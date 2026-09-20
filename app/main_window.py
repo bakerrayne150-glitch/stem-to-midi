@@ -526,9 +526,10 @@ class MainWindow(QMainWindow):
     def _on_pipeline_error(self, msg):
         self._hide_busy()
         # keep any completed work: if a project exists, leave it on screen
+        lines = msg.splitlines()[:8]
         QMessageBox.warning(self, "Processing error",
-                            f"Something failed:\n\n{msg.splitlines()[0]}\n\n"
-                            "Completed stems were kept.")
+                            "Something failed:\n\n" + "\n".join(lines) +
+                            "\n\nCompleted stems were kept.")
 
     def _on_pipeline_cancelled(self):
         self._hide_busy()
