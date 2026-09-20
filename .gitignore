@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+venv-win/
+.venv/
+
+# PyInstaller
+dist/
+build/
+*.spec~
+installer-output/
+
+# Downloaded ML models (fetched at first run / build time)
+models/
+*.onnx
+*.pt
+
+# Test audio and outputs (regenerated locally, not part of the source)
+*.wav
+*.mid
+*.json
+mix_out/
+mix_out2/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

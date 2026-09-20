@@ -1,0 +1,30 @@
+# Windows build requirements — Python 3.11, CPU-only. (2026-09-20)
+#
+# Install order matters and is handled by build.bat:
+#   1. torch + torchaudio (CPU builds, from the PyTorch CPU index — NOT PyPI,
+#      where the default wheels are multi-GB CUDA builds)
+#   2. this file
+#   3. demucs (PyPI)
+#   4. basic-pitch with --no-deps (we use its bundled ONNX model via
+#      onnxruntime; TensorFlow is deliberately NOT installed)
+numpy==1.26.4
+scipy==1.14.1
+scikit-learn==1.5.2
+librosa==0.10.2
+numba==0.60.0
+resampy==0.4.3
+soundfile==0.12.1
+soxr==0.5.0
+mido==1.3.3
+pretty_midi==0.2.11.post0
+mir-eval==0.7
+onnxruntime>=1.17
+PySide6==6.11.2
+pyinstaller==6.10.0
+setuptools>=70
+tqdm
+pyyaml
+einops
+julius
+huggingface-hub
+lameenc

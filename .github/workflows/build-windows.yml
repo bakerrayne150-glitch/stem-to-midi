@@ -1,0 +1,75 @@
+name: Build Windows .exe
+
+# Every push to main (and every manual run) compiles the Windows app
+# on a real Windows runner — no local build.bat needed.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install PyTorch (CPU-only)
+        run: |
+          python -m pip install --upgrade pip
+          pip install --timeout 120 --retries 10 ^
+            torch==2.14.0+cpu torchaudio==2.11.0+cpu ^
+            --index-url https://download.pytorch.org/whl/cpu
+        shell: cmd
+
+      - name: Install requirements
+        run: pip install -r packaging\windows\requirements-windows.txt
+        shell: cmd
+
+      - name: Install demucs and basic-pitch (no TensorFlow)
+        run: |
+          pip install demucs==4.1.0
+          pip install --no-deps basic-pitch==0.4.0
+        shell: cmd
+
+      - name: Generate test mix for smoke test
+        run: python gen_test_mix.py
+        shell: cmd
+
+      - name: Headless smoke test
+        env:
+          QT_QPA_PLATFORM: offscreen
+          BP_MODEL: onnx
+        run: python -m app.smoke_test
+        shell: cmd
+
+      - name: Build .exe with PyInstaller
+        run: python -m PyInstaller packaging\windows\stem2midi.spec --noconfirm --clean
+        shell: cmd
+
+      - name: Build installer with Inno Setup
+        run: |
+          choco install innosetup --no-progress -y
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\windows\installer.iss
+        shell: cmd
+
+      - name: Upload portable app folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stem2MIDI-windows-portable
+          path: dist/Stem2MIDI/
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: Stem2MIDI-windows-installer
+          path: dist/Stem2MIDI-Setup-*.exe

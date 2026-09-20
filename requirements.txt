@@ -1,0 +1,37 @@
+# Phase A working set (Linux, Python 3.12, CPU). 2026-09-20.
+# NOTE: basic-pitch 0.4.0 pins tensorflow<2.15.1, but no TF <2.15.1 ships
+# cp312 wheels, so plain `pip install basic-pitch` is uninstallable on
+# Python 3.12. Workaround proven here: install TF 2.16.2 + basic-pitch --no-deps.
+# basic-pitch also pins resampy<0.4.3, but 0.4.2 imports pkg_resources which
+# setuptools>=81 removed; 0.4.3 works. Revisit pins for the Windows build
+# (spec targets Python 3.11, where the stock pins likely resolve cleanly).
+basic-pitch==0.4.0
+tensorflow==2.16.2
+ml_dtypes==0.5.4
+numpy==1.26.4
+scipy==1.14.1
+scikit-learn==1.5.2
+librosa==0.10.2
+numba==0.60.0
+resampy==0.4.3
+soundfile==0.12.1
+soxr==0.5.0
+mido
+pretty_midi
+mir-eval
+setuptools
+
+# --- Phase B additions (2026-09-20): full-mix separation ---------------------
+# torch/torchaudio CPU builds come from the PyTorch CPU index, NOT PyPI:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# (the PyTorch CDN timed out twice here; retry with --timeout 120 --retries 10)
+# demucs 4.1.0 installs from PyPI and pulls tqdm/pyyaml/einops/julius/
+# huggingface-hub/lameenc. Demucs weights (~52MB for htdemucs_6s) download on
+# first use into ./models/ (TORCH_HOME) from dl.fbaipublicfiles.com.
+torch==2.14.0+cpu
+torchaudio==2.11.0+cpu
+demucs==4.1.0
+
+# --- Phase C additions (2026-09-20): correction workspace GUI --------------
+# PySide6 6.11.2 (Qt 6). Needs system libs: libEGL, libxkbcommon, libdbus.
+PySide6==6.11.2
