@@ -227,6 +227,23 @@ def main():
         except Exception:
             ok = False
     check("all exported MIDIs parse", ok)
+    # per-stem export selection: drop the WAV for one stem
+    out_dir2 = os.path.join(tempfile.gettempdir(), "smoke_export_select")
+    sel = {s.label: {"midi": True, "wav": True} for s in win.project.stems}
+    sel[win.project.stems[0].label]["wav"] = False
+    written2 = pipeline.export_all(win.project, out_dir2, True, True, True,
+                                   stem_exports=sel)
+    n_wav = sum(1 for p in written2 if p.lower().endswith(".wav"))
+    check("stem_exports drops one stem WAV",
+          n_wav == len(win.project.stems) - 1, f"{n_wav} wavs")
+    ok2 = True
+    for p in written2:
+        if p.lower().endswith(".mid"):
+            try:
+                mido.MidiFile(p)
+            except Exception:
+                ok2 = False
+    check("selective export MIDIs parse", ok2)
     win.grab().save(os.path.join(SHOT_DIR, "03-final.png"))
 
     # ---- 6. relink ---------------------------------------------------------------

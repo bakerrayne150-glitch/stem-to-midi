@@ -76,10 +76,23 @@ QLabel {{
     color: {TEXT};
     background: transparent;
 }}
+QLabel[section="true"] {{
+    color: {TEXT_DIM};
+    font-weight: bold;
+    font-size: 11px;
+    letter-spacing: 2px;
+    background: transparent;
+    padding: 2px 0;
+}}
+QFrame[card="true"] {{
+    background: {PANEL};
+    border: 1px solid {BORDER};
+    border-radius: 8px;
+}}
 QGroupBox {{
     background: {PANEL};
     border: 1px solid {BORDER};
-    border-radius: 5px;
+    border-radius: 8px;
     margin-top: 14px;
     padding-top: 6px;
     color: {TEXT};
@@ -210,7 +223,7 @@ QCheckBox::indicator:checked {{
 QListWidget {{
     background: {PANEL};
     border: 1px solid {BORDER};
-    border-radius: 5px;
+    border-radius: 8px;
     color: {TEXT};
     outline: none;
 }}
@@ -307,8 +320,14 @@ QToolTip {{
 
 
 def apply_theme(app):
-    """Apply the dark-studio theme to the QApplication (headless-safe)."""
+    """Apply the dark-studio theme to the QApplication (headless-safe).
+
+    Idempotent: repeated calls are a no-op (font bump applied once).
+    """
+    if getattr(app, "_stem2midi_themed", False):
+        return
     font = app.font()
     font.setPointSize(font.pointSize() + 1)  # 1pt larger than Qt default
     app.setFont(font)
     app.setStyleSheet(STYLESHEET)
+    app._stem2midi_themed = True

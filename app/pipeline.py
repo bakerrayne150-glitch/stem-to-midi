@@ -154,11 +154,14 @@ def transcribe_stem(wav_path, label, pitch_model=None):
     Pitched: list of (start_s, end_s, midi_pitch, velocity).
     Drums:   list of (time_s, gm_note, velocity) — use
              models.drum_tuples_to_notes to get note dicts.
+    Bass uses the dedicated monophonic pyin engine (transcribe_bass).
     """
-    from transcribe import transcribe_pitched, transcribe_drums
+    from transcribe import transcribe_pitched, transcribe_drums, transcribe_bass
     profile = PROFILE_FOR[label]
     if profile is None:
         return transcribe_drums(wav_path), True
+    if label == "bass":
+        return transcribe_bass(wav_path), False
     if pitch_model is None:
         from transcribe import load_pitch_model
         pitch_model = load_pitch_model()
@@ -187,8 +190,15 @@ def model_versions():
     return info
 
 
-def export_all(project, out_dir, per_stem=True, multitrack=True, wavs=True):
-    """Write exports per the CLI naming contract. Returns list of paths."""
+def export_all(project, out_dir, per_stem=True, multitrack=True, wavs=True,
+               stem_exports=None):
+    """Write exports per the CLI naming contract. Returns list of paths.
+
+    stem_exports: optional dict {stem_label: {"midi": bool, "wav": bool}}.
+    When provided, each stem's per-stem MIDI / WAV export follows its entry
+    (a missing entry falls back to the per_stem/wavs globals). When None,
+    the globals apply to every stem exactly as before.
+    """
     import shutil
     import mido
     from midi_out import make_multitrack, make_track, TICKS_PER_BEAT
@@ -197,12 +207,17 @@ def export_all(project, out_dir, per_stem=True, multitrack=True, wavs=True):
     order = [s.label for s in project.stems]
     written = []
 
+    def _stem_choice(label, kind, default):
+        if stem_exports is None:
+            return default
+        return bool(stem_exports.get(label, {}).get(kind, default))
+
     tracks = []
     for i, stem in enumerate(project.stems, 1):
         notes = [(n["start"], n["end"], n["pitch"], n["vel"]) for n in stem.notes]
         tracks.append({"name": stem.display_name, "channel": stem.channel,
                        "notes": notes, "is_drum": stem.is_drum})
-        if per_stem:
+        if _stem_choice(stem.label, "midi", per_stem):
             mid = mido.MidiFile(type=1, ticks_per_beat=TICKS_PER_BEAT)
             mid.tracks.append(mido.MidiTrack())
             mid.tracks[0].append(mido.MetaMessage(
@@ -214,7 +229,7 @@ def export_all(project, out_dir, per_stem=True, multitrack=True, wavs=True):
             p = os.path.join(out_dir, f"{song} - {i:02d} {stem.display_name}.mid")
             mid.save(p)
             written.append(p)
-        if wavs and os.path.isfile(stem.wav_path):
+        if _stem_choice(stem.label, "wav", wavs) and os.path.isfile(stem.wav_path):
             p = os.path.join(out_dir, f"{song} - {i:02d} {stem.display_name}.wav")
             shutil.copy2(stem.wav_path, p)
             written.append(p)

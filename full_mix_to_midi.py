@@ -21,7 +21,8 @@ import librosa
 import mido
 
 from separate import separate_to_wavs, STEM_ORDER_6, STEM_ORDER_4
-from transcribe import transcribe_pitched, transcribe_drums, load_pitch_model
+from transcribe import (transcribe_pitched, transcribe_bass, transcribe_drums,
+                        load_pitch_model, merge_overlaps)
 from midi_out import make_multitrack, DRUM_CHANNEL, TICKS_PER_BEAT
 
 # Demucs stem label -> Basic Pitch profile + MIDI channel
@@ -32,6 +33,17 @@ PROFILE_FOR = {
     "guitar": "guitar",
     "piano": "piano",
     "other": "other",
+}
+
+# Engine override per stem label: "drums" -> onset+classifier engine,
+# "bass" -> monophonic pyin engine, None -> Basic Pitch with PROFILE_FOR.
+ENGINE_FOR = {
+    "vocals": None,
+    "drums": "drums",
+    "bass": "bass",
+    "guitar": None,
+    "piano": None,
+    "other": None,
 }
 
 
@@ -95,15 +107,23 @@ def main() -> None:
         ts = time.perf_counter()
         wav_path = by_label[label]
         profile = PROFILE_FOR[label]
+        engine = ENGINE_FOR[label]
         print(f"  stem {i}/{len(order)}: {label} ...", flush=True)
-        if profile is None:
+        if engine == "drums":
             # drums -> GM percussion on channel 10
             hits = transcribe_drums(wav_path)
             notes = [(t, t + 0.12, gm, vel) for t, gm, vel in hits]
             tracks.append({"name": label.capitalize(), "channel": DRUM_CHANNEL,
                            "notes": notes, "is_drum": True})
+        elif engine == "bass":
+            # monophonic pyin bass engine
+            notes = merge_overlaps(transcribe_bass(wav_path))
+            tracks.append({"name": label.capitalize(), "channel": channel,
+                           "notes": notes, "is_drum": False})
+            channel += 1
         else:
-            notes = transcribe_pitched(wav_path, profile=profile, model=model)
+            notes = merge_overlaps(
+                transcribe_pitched(wav_path, profile=profile, model=model))
             tracks.append({"name": label.capitalize(), "channel": channel,
                            "notes": notes, "is_drum": False})
             channel += 1

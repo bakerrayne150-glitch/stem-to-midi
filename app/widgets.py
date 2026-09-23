@@ -2,9 +2,11 @@
 """widgets.py — WaveformWidget, PianoRollWidget (piano roll + drum grid),
 StemListWidget. All share a TimeView (pixels-per-second + scroll offset)."""
 import numpy as np
-from PySide6.QtCore import Qt, Signal, QRectF, QPointF
+from PySide6.QtCore import Qt, Signal, QRectF, QPointF, QSize
 from PySide6.QtGui import QPainter, QColor, QPen, QBrush, QFont, QPixmap, QIcon
-from PySide6.QtWidgets import QWidget, QListWidget, QListWidgetItem
+from PySide6.QtWidgets import (QWidget, QListWidget, QListWidgetItem,
+                               QHBoxLayout, QVBoxLayout, QLabel, QPushButton,
+                               QFrame)
 
 from app.theme import (BG, TEXT, TEXT_DIM, GRID_BEAT, GRID_BAR, ROW_ALT,
                        ROW_SEP, WAVEFORM, PLAYHEAD, FOCUS_LIGHT, accent_for)
@@ -364,12 +366,77 @@ class PianoRollWidget(QWidget):
             super().keyPressEvent(ev)
 
 
-class StemListWidget(QListWidget):
-    """Stem rows: name, M/S toggles, Src/MIDI preview toggle.
+class StemRowWidget(QWidget):
+    """One mixer channel-strip row: accent bar, name + note count, M/S.
 
-    Each row gets its stem's accent-color icon; the selected row is painted
-    with the stem accent (not the default blue).
+    Emits muteToggled / soloToggled with (stem_label, on).
     """
+
+    muteToggled = Signal(str, bool)
+    soloToggled = Signal(str, bool)
+
+    def __init__(self, stem, accent, parent=None):
+        super().__init__(parent)
+        self.label = stem.label
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(2, 2, 4, 2)
+        lay.setSpacing(8)
+        self.bar = QFrame()
+        self.bar.setFixedWidth(4)
+        self.bar.setStyleSheet(
+            f"background: {accent.name()}; border-radius: 2px;")
+        lay.addWidget(self.bar)
+        txt = QVBoxLayout()
+        txt.setContentsMargins(0, 0, 0, 0)
+        txt.setSpacing(0)
+        self.name_label = QLabel(stem.display_name)
+        f = self.name_label.font()
+        f.setBold(True)
+        self.name_label.setFont(f)
+        self.count_label = QLabel()
+        self.count_label.setStyleSheet(f"color: {TEXT_DIM}; font-size: 11px;")
+        txt.addWidget(self.name_label)
+        txt.addWidget(self.count_label)
+        lay.addLayout(txt, 1)
+        self.btn_m = QPushButton("M")
+        self.btn_m.setCheckable(True)
+        self.btn_m.setFixedSize(28, 26)
+        self.btn_m.setToolTip("Mute this stem")
+        self.btn_s = QPushButton("S")
+        self.btn_s.setCheckable(True)
+        self.btn_s.setFixedSize(28, 26)
+        self.btn_s.setToolTip("Solo this stem")
+        self.btn_m.toggled.connect(
+            lambda on: self.muteToggled.emit(self.label, on))
+        self.btn_s.toggled.connect(
+            lambda on: self.soloToggled.emit(self.label, on))
+        lay.addWidget(self.btn_m)
+        lay.addWidget(self.btn_s)
+        self.setFixedHeight(44)
+        self.sync(stem)
+
+    def sync(self, stem):
+        """Refresh name, note count, and M/S states from the stem."""
+        self.name_label.setText(stem.display_name)
+        self.count_label.setText(f"{len(stem.notes)} notes")
+        for btn, val in ((self.btn_m, stem.muted),
+                         (self.btn_s, stem.solo)):
+            btn.blockSignals(True)
+            btn.setChecked(bool(val))
+            btn.blockSignals(False)
+
+
+class StemListWidget(QListWidget):
+    """Mixer-style stem channel strips.
+
+    Each row is a StemRowWidget (accent bar, name + note count, M/S
+    toggles) installed via setItemWidget. Emits rowMuteToggled /
+    rowSoloToggled with (stem_label, on); the selected row is painted
+    with the stem accent.
+    """
+
+    rowMuteToggled = Signal(str, bool)
+    rowSoloToggled = Signal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -389,27 +456,42 @@ class StemListWidget(QListWidget):
         self._stems = stems
         self.clear()
         for s in stems:
-            item = QListWidgetItem(
-                f"{s.display_name}  ({len(s.notes)} notes)")
+            item = QListWidgetItem()
             item.setData(Qt.ItemDataRole.UserRole, s.label)
-            acc = self._accents.get(s.label, accent_for(s.label))
-            pix = QPixmap(12, 12)
-            pix.fill(acc)
-            item.setIcon(QIcon(pix))
+            item.setSizeHint(QSize(0, 44))
             self.addItem(item)
+            row = StemRowWidget(s, self._accents.get(s.label,
+                                                     accent_for(s.label)))
+            row.muteToggled.connect(self.rowMuteToggled.emit)
+            row.soloToggled.connect(self.rowSoloToggled.emit)
+            self.setItemWidget(item, row)
         if stems:
             self.setCurrentRow(0)
         self._recolor()
+
+    def refresh_counts(self, stems):
+        """Sync every row widget (name, note count, M/S) without losing
+        selection. Call after edits that change note counts."""
+        for i, s in enumerate(stems):
+            item = self.item(i)
+            if item is None:
+                continue
+            row = self.itemWidget(item)
+            if row is not None:
+                row.sync(s)
 
     def _recolor(self):
         cur = self.currentRow()
         for i in range(self.count()):
             item = self.item(i)
+            row = self.itemWidget(item)
+            if row is None:
+                continue
             label = item.data(Qt.ItemDataRole.UserRole)
             if i == cur:
                 acc = self._accents.get(label, accent_for(label))
-                item.setBackground(acc.darker(160))
-                item.setForeground(QColor(TEXT))
+                row.setStyleSheet(
+                    f"background: {acc.darker(160).name()};"
+                    " border-radius: 4px;")
             else:
-                item.setBackground(QBrush())  # clear -> stylesheet default
-                item.setForeground(QColor(TEXT))
+                row.setStyleSheet("background: transparent;")

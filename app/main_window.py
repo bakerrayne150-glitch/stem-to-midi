@@ -13,15 +13,22 @@ from PySide6.QtWidgets import (
     QToolBar, QComboBox, QPushButton, QProgressBar, QLabel, QSlider,
     QScrollBar, QSpinBox, QDoubleSpinBox, QCheckBox, QGroupBox,
     QFormLayout, QFileDialog, QMessageBox, QDialog, QDialogButtonBox,
-    QLineEdit, QStatusBar, QInputDialog,
+    QLineEdit, QStatusBar, QInputDialog, QGridLayout, QFrame,
 )
 
 from app import pipeline, cleanup, session as session_mod
 from app.models import Project
-from app.theme import accent_for, apply_theme
+from app.theme import accent_for, apply_theme, TEXT_DIM
 from app.widgets import TimeView, WaveformWidget, PianoRollWidget, StemListWidget
 from app.worker import PipelineWorker
 from app.player import Player
+
+
+def _section_label(text):
+    """Small-caps dim section header (stylesheet: QLabel[section="true"])."""
+    lbl = QLabel(text.upper())
+    lbl.setProperty("section", True)
+    return lbl
 
 
 # ---------------------------------------------------------------- undo ----
@@ -108,19 +115,30 @@ class RetranscribeWorker(QObject):
 # ------------------------------------------------------------- export -----
 
 class ExportDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, stems=()):
         super().__init__(parent)
         self.setWindowTitle("Export")
         lay = QVBoxLayout(self)
-        self.cb_stems = QCheckBox("Per-stem MIDI files")
-        self.cb_stems.setChecked(True)
+        # per-stem keep/discard grid: MIDI and WAV checkboxes per stem
+        self._stem_rows = []  # (label, midi_cb, wav_cb)
+        if stems:
+            grid = QGridLayout()
+            grid.addWidget(QLabel("Stem"), 0, 0)
+            grid.addWidget(QLabel("MIDI"), 0, 1)
+            grid.addWidget(QLabel("WAV"), 0, 2)
+            for r, stem in enumerate(stems, 1):
+                grid.addWidget(QLabel(stem.display_name), r, 0)
+                cb_midi = QCheckBox()
+                cb_midi.setChecked(True)
+                cb_wav = QCheckBox()
+                cb_wav.setChecked(True)
+                grid.addWidget(cb_midi, r, 1)
+                grid.addWidget(cb_wav, r, 2)
+                self._stem_rows.append((stem.label, cb_midi, cb_wav))
+            lay.addLayout(grid)
         self.cb_multi = QCheckBox("Multitrack MIDI (Type 1)")
         self.cb_multi.setChecked(True)
-        self.cb_wavs = QCheckBox("Stem WAVs")
-        self.cb_wavs.setChecked(True)
-        lay.addWidget(self.cb_stems)
         lay.addWidget(self.cb_multi)
-        lay.addWidget(self.cb_wavs)
         row = QHBoxLayout()
         self.dir_edit = QLineEdit(os.path.expanduser("~"))
         browse = QPushButton("Browse…")
@@ -133,6 +151,11 @@ class ExportDialog(QDialog):
         btns.accepted.connect(self.accept)
         btns.rejected.connect(self.reject)
         lay.addWidget(btns)
+
+    def stem_exports(self):
+        """{label: {"midi": bool, "wav": bool}} from the per-stem grid."""
+        return {label: {"midi": cb_m.isChecked(), "wav": cb_w.isChecked()}
+                for label, cb_m, cb_w in self._stem_rows}
 
     def _browse(self):
         d = QFileDialog.getExistingDirectory(self, "Export directory")
@@ -161,6 +184,78 @@ class MainWindow(QMainWindow):
 
         self._build_ui()
         self._wire()
+        self.setAcceptDrops(True)
+        self._show_welcome(True)
+
+    # -- welcome empty state -------------------------------------------------
+    def _build_welcome(self):
+        """Drop-zone card shown when no project is loaded."""
+        wrap = QWidget()
+        wl = QVBoxLayout(wrap)
+        wl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        card = QFrame()
+        card.setProperty("card", True)
+        card.setMaximumWidth(480)
+        cl = QVBoxLayout(card)
+        cl.setContentsMargins(36, 36, 36, 36)
+        cl.setSpacing(10)
+        title = QLabel("Drop an audio file here")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        f = title.font()
+        f.setPointSize(f.pointSize() + 7)
+        f.setBold(True)
+        title.setFont(f)
+        cl.addWidget(title)
+        sub = QLabel("WAV, FLAC, MP3, M4A or OGG")
+        sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sub.setStyleSheet(f"color: {TEXT_DIM};")
+        cl.addWidget(sub)
+        brow = QPushButton("or click to browse…")
+        brow.clicked.connect(self.open_file)
+        cl.addWidget(brow)
+        self.welcome_mode = QComboBox()
+        self.welcome_mode.addItems(["Full mix — 6 stems", "Full mix — 4 stems",
+                                    "Isolated stem"])
+        cl.addWidget(self.welcome_mode)
+        self.welcome_process = QPushButton("Process")
+        self.welcome_process.setDefault(True)
+        pf = self.welcome_process.font()
+        pf.setBold(True)
+        self.welcome_process.setFont(pf)
+        self.welcome_process.clicked.connect(self._welcome_process)
+        cl.addWidget(self.welcome_process)
+        wl.addWidget(card)
+        return wrap
+
+    def _show_welcome(self, show):
+        self.welcome.setVisible(show)
+        self.waveform.setVisible(not show)
+        self.pianoroll.setVisible(not show)
+        self.hscroll.setVisible(not show)
+
+    def _welcome_process(self):
+        self.mode_combo.setCurrentText(self.welcome_mode.currentText())
+        self.process()
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() and any(
+                u.isLocalFile() and u.toLocalFile().lower().endswith(
+                    (".wav", ".flac", ".mp3", ".m4a", ".ogg"))
+                for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        for u in event.mimeData().urls():
+            path = u.toLocalFile()
+            if path.lower().endswith((".wav", ".flac", ".mp3", ".m4a",
+                                      ".ogg")):
+                self._pending_input = path
+                self.statusBar().showMessage(
+                    f"Selected: {path} — press Process")
+                break
+        event.acceptProposedAction()
 
     # -- UI construction -------------------------------------------------
     def _build_ui(self):
@@ -226,7 +321,7 @@ class MainWindow(QMainWindow):
         # left panel
         left = QWidget()
         ll = QVBoxLayout(left)
-        ll.addWidget(QLabel("Stems"))
+        ll.addWidget(_section_label("Stems"))
         self.stem_list = StemListWidget()
         ll.addWidget(self.stem_list, 1)
         # per-stem controls for the selected stem
@@ -258,6 +353,8 @@ class MainWindow(QMainWindow):
         center = QWidget()
         cl2 = QVBoxLayout(center)
         cl2.setContentsMargins(0, 0, 0, 0)
+        self.welcome = self._build_welcome()
+        cl2.addWidget(self.welcome, 1)
         self.waveform = WaveformWidget(self.tv)
         self.pianoroll = PianoRollWidget(self.tv)
         cl2.addWidget(self.waveform, 1)
@@ -269,7 +366,7 @@ class MainWindow(QMainWindow):
         # right panel
         right = QWidget()
         rl = QVBoxLayout(right)
-        rl.addWidget(QLabel("Transcription && cleanup"))
+        rl.addWidget(_section_label("Transcription"))
         form = QFormLayout()
         self.profile_combo = QComboBox()
         self.profile_combo.addItems(["bass", "melody", "vocal", "piano",
@@ -322,11 +419,12 @@ class MainWindow(QMainWindow):
         rl.addStretch(1)
         splitter.addWidget(right)
         splitter.setSizes([220, 800, 260])
-        self.setCentralWidget(splitter)
 
-        # bottom transport bar
-        status = QStatusBar()
-        self.setStatusBar(status)
+        # slim transport bar (mixer-console style); status bar keeps messages
+        transport = QWidget()
+        tl = QHBoxLayout(transport)
+        tl.setContentsMargins(8, 4, 8, 4)
+        tl.setSpacing(6)
         self.btn_play = QPushButton("Play")
         self.btn_pause = QPushButton("Pause")
         self.btn_stop = QPushButton("Stop")
@@ -344,20 +442,34 @@ class MainWindow(QMainWindow):
         self.zoom_slider.setRange(20, 400)
         self.zoom_slider.setValue(60)
         self.zoom_slider.setMaximumWidth(160)
-        status.addWidget(self.btn_play)
-        status.addWidget(self.btn_pause)
-        status.addWidget(self.btn_stop)
-        status.addWidget(self.btn_loop)
-        status.addWidget(QLabel("A/B:"))
-        status.addWidget(self.ab_combo)
-        status.addWidget(self.tempo_label)
-        status.addWidget(self.time_label)
-        status.addPermanentWidget(QLabel("Zoom:"))
-        status.addPermanentWidget(self.zoom_slider)
+        tl.addWidget(self.btn_play)
+        tl.addWidget(self.btn_pause)
+        tl.addWidget(self.btn_stop)
+        tl.addWidget(self.btn_loop)
+        tl.addWidget(QLabel("A/B:"))
+        tl.addWidget(self.ab_combo)
+        tl.addWidget(self.tempo_label)
+        tl.addWidget(self.time_label)
+        tl.addStretch(1)
+        tl.addWidget(QLabel("Zoom:"))
+        tl.addWidget(self.zoom_slider)
+
+        central = QWidget()
+        cv = QVBoxLayout(central)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        cv.addWidget(splitter, 1)
+        cv.addWidget(transport)
+        self.setCentralWidget(central)
+
+        # status bar: messages only
+        self.setStatusBar(QStatusBar())
 
     # -- wiring ------------------------------------------------------------
     def _wire(self):
         self.stem_list.currentRowChanged.connect(self._on_stem_selected)
+        self.stem_list.rowMuteToggled.connect(self._on_row_mute)
+        self.stem_list.rowSoloToggled.connect(self._on_row_solo)
         self.btn_mute.toggled.connect(self._on_mute_toggled)
         self.btn_solo.toggled.connect(self._on_solo_toggled)
         self.btn_src.clicked.connect(lambda: self._set_preview("source"))
@@ -540,6 +652,7 @@ class MainWindow(QMainWindow):
         self.project = project
         self.undo_stack.clear()
         self._dirty = False
+        self._show_welcome(False)
         for stem in project.stems:
             for n in stem.notes:
                 n["id"] = next(self._id_counter)
@@ -606,11 +719,35 @@ class MainWindow(QMainWindow):
         stem = self.current_stem()
         if stem:
             self._show_stem_notes(stem)
-            # keep the list counts fresh without losing selection
-            row = self.stem_list.currentRow()
-            item = self.stem_list.item(row)
-            if item is not None:
-                item.setText(f"{stem.display_name}  ({len(stem.notes)} notes)")
+            # keep the strip note counts fresh without losing selection
+            self.stem_list.refresh_counts(self.project.stems)
+
+    def _on_row_mute(self, label, on):
+        stem = self._stem_by_label(label)
+        if stem:
+            stem.muted = on
+            self.player.invalidate()
+            self._mark_dirty()
+            if stem is self.current_stem():
+                self.btn_mute.blockSignals(True)
+                self.btn_mute.setChecked(on)
+                self.btn_mute.blockSignals(False)
+
+    def _on_row_solo(self, label, on):
+        stem = self._stem_by_label(label)
+        if stem:
+            stem.solo = on
+            self.player.invalidate()
+            self._mark_dirty()
+            if stem is self.current_stem():
+                self.btn_solo.blockSignals(True)
+                self.btn_solo.setChecked(on)
+                self.btn_solo.blockSignals(False)
+
+    def _stem_by_label(self, label):
+        if not self.project:
+            return None
+        return next((s for s in self.project.stems if s.label == label), None)
 
     def _on_mute_toggled(self, on):
         stem = self.current_stem()
@@ -618,6 +755,7 @@ class MainWindow(QMainWindow):
             stem.muted = on
             self.player.invalidate()
             self._mark_dirty()
+            self.stem_list.refresh_counts(self.project.stems)
 
     def _on_solo_toggled(self, on):
         stem = self.current_stem()
@@ -625,6 +763,7 @@ class MainWindow(QMainWindow):
             stem.solo = on
             self.player.invalidate()
             self._mark_dirty()
+            self.stem_list.refresh_counts(self.project.stems)
 
     def _set_preview(self, mode):
         stem = self.current_stem()
@@ -888,16 +1027,17 @@ class MainWindow(QMainWindow):
         if not self.project:
             QMessageBox.information(self, "Export", "Nothing to export yet.")
             return
-        dlg = ExportDialog(self)
+        dlg = ExportDialog(self, self.project.stems)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
         out_dir = dlg.dir_edit.text().strip() or os.path.expanduser("~")
         try:
             written = pipeline.export_all(
                 self.project, out_dir,
-                per_stem=dlg.cb_stems.isChecked(),
+                per_stem=True,
                 multitrack=dlg.cb_multi.isChecked(),
-                wavs=dlg.cb_wavs.isChecked())
+                wavs=True,
+                stem_exports=dlg.stem_exports())
         except Exception as e:  # noqa: BLE001
             QMessageBox.warning(self, "Export failed", str(e))
             return

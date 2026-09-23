@@ -2,13 +2,16 @@
 """transcribe.py — importable transcription cores (Phase A refactored for Phase B).
 
 Pitched: Spotify Basic Pitch, one shared model instance, per-profile settings.
-Drums:   librosa onset detection + spectral-window classification -> GM notes.
+Drums:   librosa onset detection + spectral/temporal classification -> GM notes.
+Bass:    dedicated monophonic engine (librosa.pyin); Basic Pitch fallback.
 
 Public API:
     load_pitch_model() -> basic_pitch Model (cached)
     transcribe_pitched(path, profile="other", model=None)
         -> list of (start_s, end_s, midi_pitch, velocity)
+    transcribe_bass(path) -> list of (start_s, end_s, midi_pitch, velocity)
     transcribe_drums(path) -> list of (time_s, gm_note, velocity)
+    merge_overlaps(notes) -> same-pitch overlap-merged note tuples
 """
 import os
 import pathlib
@@ -108,6 +111,149 @@ def transcribe_pitched(audio_path, profile="other", model=None):
     return notes
 
 
+# ------------------------------------------------------------------ bass ---
+
+def transcribe_bass(audio_path):
+    """Monophonic bass transcription via librosa.pyin.
+
+    Returns [(start_s, end_s, midi_pitch, velocity)], the same tuple format
+    as transcribe_pitched. Pipeline: pyin f0 (27.5-330 Hz) -> bridge unvoiced
+    blips <= 60 ms -> median-filter pitch -> split segments on unvoiced gaps
+    or sustained pitch jumps > 0.6 semitone -> drop segments < 120 ms ->
+    MIDI = rounded segment median pitch, velocity from per-note RMS.
+
+    Falls back to transcribe_pitched(profile="bass") when pyin finds no
+    voiced frames at all (e.g. silence or a non-bass stem misrouted here).
+    """
+    from scipy.signal import medfilt  # ships with the librosa stack
+
+    y, sr = librosa.load(audio_path, sr=SR, mono=True)
+    if y.size == 0:
+        return transcribe_pitched(audio_path, profile="bass")
+
+    hop = 512  # librosa.pyin default hop_length
+    f0, voiced, _prob = librosa.pyin(y, fmin=27.5, fmax=330.0, sr=sr)
+    if f0 is None or not np.any(voiced):
+        return transcribe_pitched(audio_path, profile="bass")
+
+    frame_t = librosa.frames_to_time(np.arange(len(f0)), sr=sr,
+                                     hop_length=hop)
+    frame_s = hop / sr
+    midi_c = np.full(len(f0), np.nan)
+    midi_c[voiced] = 69.0 + 12.0 * np.log2(f0[voiced] / 440.0)
+
+    # bridge unvoiced blips <= 60 ms so legato notes don't fragment
+    max_gap = max(1, int(round(0.060 / frame_s)))
+    v = voiced.copy()
+    i = 0
+    while i < len(v):
+        if not v[i]:
+            j = i
+            while j < len(v) and not v[j]:
+                j += 1
+            if j - i <= max_gap and i > 0 and j < len(v):
+                v[i:j] = True
+                a, b = midi_c[i - 1], midi_c[j]
+                midi_c[i:j] = np.linspace(a, b, j - i)
+            i = j
+        else:
+            i += 1
+
+    # median-filter pitch to kill jitter (kernel ~5 frames ~= 115 ms)
+    filled = midi_c.copy()
+    nan = np.isnan(filled)
+    if np.any(nan):
+        idx = np.arange(len(filled))
+        filled[nan] = np.interp(idx[nan], idx[~nan], filled[~nan])
+    smooth = medfilt(filled, kernel_size=5)
+
+    # segment: split on unvoiced runs and on sustained pitch jumps > 0.6 st
+    w = 3  # frames each side for the "sustained" jump test
+    bounds = [0]
+    for f in range(1, len(v)):
+        if v[f] and not v[f - 1]:
+            bounds.append(f)
+        elif v[f - 1] and not v[f]:
+            bounds.append(f)
+        elif v[f] and v[f - 1]:
+            a = np.median(smooth[max(0, f - w):f])
+            b = np.median(smooth[f:f + w])
+            if abs(float(b) - float(a)) > 0.6:
+                bounds.append(f)
+    bounds.append(len(v))
+
+    # split segments on energy dips (re-articulated repeated notes): a local
+    # RMS valley that is deep relative to its surroundings and followed by
+    # recovery marks a new attack even when the pitch doesn't change.
+    rms_frames = librosa.feature.rms(y=y, frame_length=2048,
+                                     hop_length=hop)[0]
+    n_fr = min(len(rms_frames), len(v))
+    refined = [bounds[0]]
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        e = min(e, n_fr)
+        seg = rms_frames[s:e]
+        cuts = []
+        for f in range(4, len(seg) - 4):
+            if seg[f] != seg[f - 2:f + 3].min():
+                continue  # not a local valley over +-2 frames
+            ctx_max = seg[f - 4:f + 4].max()
+            if ctx_max <= 0:
+                continue
+            deep = seg[f] < 0.45 * ctx_max
+            recovers = seg[f + 1:f + 5].max() > 0.6 * ctx_max
+            if deep and recovers:
+                cuts.append(s + f)
+        refined.extend(sorted(set(cuts)))
+        refined.append(e)
+    bounds = sorted(set(refined))
+
+    segments = []
+    for s, e in zip(bounds[:-1], bounds[1:]):
+        if not np.any(v[s:e]):
+            continue
+        start = float(frame_t[s])
+        end = float(frame_t[e - 1] + frame_s)
+        if end - start < 0.120:
+            continue
+        pitch = int(np.clip(round(float(np.median(smooth[s:e]))), 0, 127))
+        s0 = int(s * hop)
+        s1 = min(len(y), int(e * hop))
+        rms = float(np.sqrt(np.mean(y[s0:s1] ** 2)) + 1e-12)
+        segments.append((start, end, pitch, rms))
+
+    if not segments:
+        return transcribe_pitched(audio_path, profile="bass")
+
+    max_rms = max(s[3] for s in segments)
+    notes = []
+    for start, end, pitch, rms in segments:
+        n = rms / (max_rms + 1e-12)
+        vel = int(np.clip(64 + 63 * n, 1, 127))
+        notes.append((start, end, pitch, vel))
+    notes.sort(key=lambda n: (n[0], n[2]))
+    return notes
+
+
+def merge_overlaps(notes):
+    """Merge same-pitch notes whose time ranges overlap.
+
+    notes: iterable of (start_s, end_s, midi_pitch, velocity) tuples.
+    Returns a new list sorted by (start, pitch). Idempotent: a second pass
+    changes nothing. Mirrors app/cleanup.py::merge_same_pitch_overlaps
+    (tuple flavor); merges per pitch so interleaved pitches can't block it.
+    """
+    notes = sorted(notes, key=lambda n: (n[2], n[0]))
+    merged = []
+    for start, end, pitch, vel in notes:
+        if merged and merged[-1][2] == pitch and start < merged[-1][1]:
+            ps, pe, pp, pv = merged[-1]
+            merged[-1] = (ps, max(pe, end), pp, max(pv, vel))
+        else:
+            merged.append((start, end, pitch, vel))
+    merged.sort(key=lambda n: (n[0], n[2]))
+    return merged
+
+
 # ------------------------------------------------------------------ drums ---
 
 SR = 22050
@@ -136,7 +282,12 @@ def band_energy_ratio(mag, freqs, lo, hi):
 
 
 def classify_hit(y_win, sr):
-    """Classify one onset window -> kit piece label. Frequency-only rules (prototype)."""
+    """Classify one onset window -> kit piece label.
+
+    Features: spectral centroid, band energy ratios, spectral rolloff,
+    zero-crossing rate (noisy vs tonal), early/late decay ratio, and
+    high-frequency sustain (open vs closed hats/cymbals).
+    """
     if len(y_win) < 64:
         return "other"
     S = np.abs(librosa.stft(y_win, n_fft=1024, hop_length=256))
@@ -144,6 +295,9 @@ def classify_hit(y_win, sr):
     freqs = librosa.fft_frequencies(sr=sr, n_fft=1024)
 
     centroid = float(np.sum(freqs * mag) / (mag.sum() + 1e-12))
+    rolloff = float(librosa.feature.spectral_rolloff(S=S, sr=sr)[0].mean())
+    zcr = float(librosa.feature.zero_crossing_rate(
+        y_win, frame_length=1024, hop_length=512).mean())
     low = band_energy_ratio(mag, freqs, 20, 250)
     lowmid = band_energy_ratio(mag, freqs, 250, 1000)
     mid = band_energy_ratio(mag, freqs, 1000, 4000)
@@ -157,12 +311,30 @@ def classify_hit(y_win, sr):
     decay_ratio = e_early / e_late  # large = fast decay
     fast_decay = decay_ratio > 4.0
 
-    # --- rules (tuned on synthetic ground truth, 2026-09-20; prototype only) ---
+    # high-frequency sustain: HF-band (>=6 kHz) energy late (40-75ms) vs
+    # early (0-25ms). Open hats/crashes keep ringing; closed hats choke.
+    hf = freqs >= 6000
+    fr_t = librosa.frames_to_time(np.arange(S.shape[1]), sr=sr, hop_length=256)
+    hf_early = S[np.ix_(hf, fr_t < 0.025)].mean() + 1e-12
+    hf_late = S[np.ix_(hf, (fr_t >= 0.040) & (fr_t < 0.075))].mean() + 1e-12
+    hf_sustain = float(hf_late / hf_early)
+    # a true ring (open hat / crash) decays slowly AND keeps HF energy;
+    # onset timing jitter makes the decay ratio alone unreliable
+    sustained_ring = (not fast_decay) and hf_sustain > 0.15
+
+    # --- rules (tuned on synthetic ground truth, 2026-09-20; refined
+    # 2026-09-23: rolloff/ZCR added, HF-sustain for hat disambiguation) ---
     if centroid < 600 and low > 0.5:
         return "kick"
     if centroid > 5200 and high > 0.5:
-        return "open_hat" if not fast_decay else "closed_hat"
+        # hats live up here: HF ring sustained -> open, choked -> closed
+        return "open_hat" if hf_sustain > 0.20 else "closed_hat"
     if 900 < centroid < 5000 and mid > 0.25:
+        # snares are noisy (high ZCR); tonal midrange hits are high toms
+        if zcr > 0.10:
+            return "snare"
+        if centroid < 1600 and (low + lowmid) > 0.35:
+            return "high_tom"
         return "snare"
     if 250 < centroid <= 900 and (low + lowmid) > 0.4:
         if centroid < 420:
@@ -170,7 +342,7 @@ def classify_hit(y_win, sr):
         if centroid < 650:
             return "mid_tom"
         return "high_tom"
-    if centroid > 4200 and not fast_decay:
+    if centroid > 4200 and rolloff > 9000 and sustained_ring:
         return "crash"
     if 2200 < centroid <= 7000 and not fast_decay:
         return "ride"
